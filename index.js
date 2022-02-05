@@ -70,19 +70,19 @@ const getPriceInDUSD = async (amount, symbol) => {
   }
 };
 
-const getHighestBidSoFar = async (vaultId, batchIndex) => {
+const getMaxPrice = async (amount, symbol) => {
   try {
-    const vault = await client.loan.getVault(vaultId);
-    return vault.batches?.[batchIndex]?.highestBid;
+    const poolPair = await client.poolpair.getPoolPair(`${symbol}-DUSD`);
+    const [rate] = Object.entries(poolPair).map(([, pair]) => pair['reserveA/reserveB']);
+    return rate.multipliedBy(amount).multipliedBy('0.97');
   } catch (error) {
-    logError('getVault error', error);
+    logError('getMaxPrice error', error);
     return null;
   }
 };
 
-const getStartingBid = async ({ vaultId, index, loan }) => {
-  const highestBidSoFar = await getHighestBidSoFar(vaultId, index);
-  const [amount, symbol] = loan.split('@');
+const getStartingBid = async (vault, batchIndex, amount, symbol) => {
+  const highestBidSoFar = vault.batches?.[batchIndex]?.highestBid;
 
   if (!highestBidSoFar) {
     const loanNum = await getPriceInDUSD(amount, symbol);
@@ -117,26 +117,53 @@ app.get('/get-auction-list/:limit', async (req, res) => {
 
     const result = [];
     for (let index = 0; index < availableAuctions.length; index += 1) {
-      const auction = availableAuctions[index];
-      const startingBid = await getStartingBid(auction);
-      const reward = await getRewardPrice(auction.collaterals);
-      const url = `https://defiscan.live/vaults/${auction.vaultId}/auctions/${auction.index}`;
+      const { vaultId, index: batchIndex, loan, collaterals } = availableAuctions[index];
+      const vault = await client.loan.getVault(vaultId);
+      const [minBid, symbol] = loan.split('@');
+      const startingBid = await getStartingBid(vault, batchIndex, minBid, symbol);
+      const reward = await getRewardPrice(collaterals);
+      const url = `https://defiscan.live/vaults/${vaultId}/auctions/${batchIndex}`;
       const diff = reward.minus(startingBid);
       const margin = diff.dividedBy(startingBid).multipliedBy(100);
       const coolDown = parseInt(process.env.COOL_DOWN, 10);
+      const maxPrice = await getMaxPrice(reward, symbol);
       wait(coolDown);
       if (margin.isGreaterThanOrEqualTo(minMarginPercentage)) {
-        result.push({ url, minBid: startingBid, reward, diff, margin });
+        result.push({
+          url,
+          minBidDusd: startingBid,
+          reward,
+          diff,
+          margin,
+          maxBlockNumber: vault.liquidationHeight,
+          bidToken: symbol,
+          maxPrice,
+          minBid,
+        });
       }
     }
     result.sort(sortyByMargin);
     result.reverse();
-    const auctions = result.map(({ url, minBid, reward, diff, margin }) => ({
+    const auctions = result.map(({
       url,
-      minBid: `${minBid.toPrecision(10)} DUSD`,
-      reward: `${reward.toPrecision(10)} DUSD`,
-      diff: `${diff.toPrecision(7)} DUSD`,
-      margin: `${margin.toPrecision(5)}%`,
+      minBidDusd,
+      reward,
+      diff,
+      margin,
+      maxPrice,
+      maxBlockNumber,
+      bidToken,
+      minBid,
+    }) => ({
+      url,
+      minBidDusd: minBidDusd.toString(),
+      reward: reward.toString(),
+      diff: diff.toString(),
+      margin: margin.toString(),
+      maxPrice: maxPrice.toString(),
+      maxBlockNumber,
+      bidToken,
+      minBid,
     }));
     res.json(auctions);
   } catch (error) {
