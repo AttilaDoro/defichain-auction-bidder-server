@@ -74,7 +74,7 @@ const getMaxPrice = async (amount, symbol) => {
   try {
     const poolPair = await client.poolpair.getPoolPair(`${symbol}-DUSD`);
     const [rate] = Object.entries(poolPair).map(([, pair]) => pair['reserveA/reserveB']);
-    return rate.multipliedBy(amount).multipliedBy('0.97');
+    return rate.multipliedBy(amount).multipliedBy('0.99');
   } catch (error) {
     logError('getMaxPrice error', error);
     return null;
@@ -103,12 +103,6 @@ const getRewardPrice = async (collaterals) => {
   return prices.reduce((sum, price) => sum.plus(price), new BigNumber(0));
 };
 
-const sortyByMargin = ({ margin: first }, { margin: second }) => {
-  if (first.isGreaterThan(second)) return -1;
-  if (second.isGreaterThan(first)) return 1;
-  return 0;
-};
-
 app.get('/get-auction-list/:limit', async (req, res) => {
   try {
     const limit = parseInt(req.params.limit, 10);
@@ -128,7 +122,7 @@ app.get('/get-auction-list/:limit', async (req, res) => {
       const coolDown = parseInt(process.env.COOL_DOWN, 10);
       const maxPrice = await getMaxPrice(reward, symbol);
       wait(coolDown);
-      if (margin.isGreaterThanOrEqualTo(minMarginPercentage)) {
+      if (margin.isGreaterThanOrEqualTo(minMarginPercentage) && diff.isGreaterThan(1) && startingBid.isLessThan(8000)) {
         result.push({
           url,
           minBidDusd: startingBid,
@@ -142,8 +136,6 @@ app.get('/get-auction-list/:limit', async (req, res) => {
         });
       }
     }
-    result.sort(sortyByMargin);
-    result.reverse();
     const auctions = result.map(({
       url,
       minBidDusd,
