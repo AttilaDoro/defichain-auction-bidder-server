@@ -17,11 +17,6 @@ const logError = (message, error) => {
   console.log(message, error);
 };
 
-const logInfo = (message) => {
-  logger.info(message);
-  console.log(message);
-};
-
 const checkRequiredConfig = () => {
   const { CLIENT_ENDPOINT_URL, PORT, COOL_DOWN } = process.env;
   if (!CLIENT_ENDPOINT_URL || !PORT || !COOL_DOWN) {
@@ -46,6 +41,10 @@ const getAvailableAuctions = async (limit) => {
 };
 
 const getPriceInDUSD = async (amount, symbol) => {
+  if (symbol === 'DUSD') {
+    const amountNum = new BigNumber(amount);
+    return amountNum;
+  }
   try {
     if (symbol === 'DFI') {
       const poolPair = await client.poolpair.getPoolPair('DUSD-DFI');
@@ -71,12 +70,16 @@ const getPriceInDUSD = async (amount, symbol) => {
 };
 
 const getMaxPrice = async (amount, symbol) => {
+  if (symbol === 'DUSD') {
+    const amountNum = new BigNumber(amount);
+    return amountNum.multipliedBy('0.99');
+  }
   try {
     const poolPair = await client.poolpair.getPoolPair(`${symbol}-DUSD`);
     const [rate] = Object.entries(poolPair).map(([, pair]) => pair['reserveA/reserveB']);
     return rate.multipliedBy(amount).multipliedBy('0.99');
   } catch (error) {
-    logError('getMaxPrice error', error);
+    logError('getMaxPrice error', symbol, error);
     return null;
   }
 };
@@ -94,6 +97,13 @@ const getStartingBid = async (vault, batchIndex, amount, symbol) => {
   return highestBidSoFarNum.multipliedBy('1.01');
 };
 
+const getMyStartingBid = (vault, batchIndex, amount, myPriceInDusd) => {
+  const highestBidSoFar = vault.batches?.[batchIndex]?.highestBid;
+  if (!highestBidSoFar) return myPriceInDusd.multipliedBy(amount).multipliedBy('1.05');
+  const [highestBidAmount] = highestBidSoFar.amount.split('@');
+  return myPriceInDusd.multipliedBy(highestBidAmount).multipliedBy('1.01');
+};
+
 const getRewardPrice = async (collaterals) => {
   const pricePromises = collaterals.map((collateral) => {
     const [amount, symbol] = collateral.split('@');
@@ -101,6 +111,21 @@ const getRewardPrice = async (collaterals) => {
   });
   const prices = await Promise.all(pricePromises);
   return prices.reduce((sum, price) => sum.plus(price), new BigNumber(0));
+};
+
+const getAuctionCondition = (margin, diff, minMarginPercentage) => {
+  if (!margin || !diff) return false;
+  return margin.isGreaterThanOrEqualTo(minMarginPercentage) && diff.isGreaterThan(1);
+};
+
+const getOwnPriceData = ({ symbol, vault, batchIndex, minBid, reward }) => {
+  if (!process.env[symbol]) return {};
+  const myPriceInDusd = new BigNumber(process.env[symbol]);
+  const myStartingBid = getMyStartingBid(vault, batchIndex, minBid, myPriceInDusd);
+  const myDiff = reward.minus(myStartingBid);
+  const myMargin = myDiff.dividedBy(myStartingBid).multipliedBy(100);
+  const ownPriceData = { myStartingBid, myDiff, myMargin };
+  return ownPriceData;
 };
 
 app.get('/get-auction-list/:limit', async (req, res) => {
@@ -121,8 +146,14 @@ app.get('/get-auction-list/:limit', async (req, res) => {
       const margin = diff.dividedBy(startingBid).multipliedBy(100);
       const coolDown = parseInt(process.env.COOL_DOWN, 10);
       const maxPrice = await getMaxPrice(reward, symbol);
+
       wait(coolDown);
-      if (margin.isGreaterThanOrEqualTo(minMarginPercentage) && diff.isGreaterThan(1) && startingBid.isLessThan(8000)) {
+
+      const ownPriceData = getOwnPriceData({ symbol, vault, batchIndex, minBid, reward });
+      const tokenCondition = getAuctionCondition(margin, diff, minMarginPercentage);
+      const myTokenCondition = getAuctionCondition(ownPriceData.myMargin, ownPriceData.myDiff, minMarginPercentage);
+
+      if (tokenCondition || myTokenCondition) {
         result.push({
           url,
           minBidDusd: startingBid,
@@ -133,9 +164,11 @@ app.get('/get-auction-list/:limit', async (req, res) => {
           bidToken: symbol,
           maxPrice,
           minBid,
+          ...ownPriceData,
         });
       }
     }
+
     const auctions = result.map(({
       url,
       minBidDusd,
@@ -146,17 +179,26 @@ app.get('/get-auction-list/:limit', async (req, res) => {
       maxBlockNumber,
       bidToken,
       minBid,
-    }) => ({
-      url,
-      minBidDusd: minBidDusd.toString(),
-      reward: reward.toString(),
-      diff: diff.toString(),
-      margin: margin.toString(),
-      maxPrice: maxPrice.toString(),
-      maxBlockNumber,
-      bidToken,
-      minBid,
-    }));
+      myStartingBid,
+      myDiff,
+      myMargin,
+    }) => {
+      const auctionData = {
+        url,
+        minBidDusd: minBidDusd.toString(),
+        reward: reward.toString(),
+        diff: diff.toString(),
+        margin: margin.toString(),
+        maxPrice: maxPrice.toString(),
+        maxBlockNumber,
+        bidToken: bidToken.toString(),
+        minBid: minBid.toString(),
+      };
+      if (myStartingBid) auctionData.myStartingBid = myStartingBid;
+      if (myDiff) auctionData.myDiff = myDiff;
+      if (myMargin) auctionData.myMargin = myMargin;
+      return auctionData;
+    });
     res.json(auctions);
   } catch (error) {
     logError('get-auction-list error', error);
