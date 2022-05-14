@@ -3,24 +3,14 @@ const express = require('express');
 const { JsonRpcClient } = require('@defichain/jellyfish-api-jsonrpc');
 const BigNumber = require('bignumber.js');
 const cors = require('cors');
-const SimpleNodeLogger = require('simple-node-logger');
 
-const logger = SimpleNodeLogger.createSimpleFileLogger({
-  logFilePath: `${Date.now()}.log`,
-  timestampFormat: 'YYYY-MM-DD HH:mm:ss.SSS',
-});
 const app = express();
 const client = new JsonRpcClient(process.env.CLIENT_ENDPOINT_URL);
-
-const logError = (message, error) => {
-  logger.error(message);
-  console.log(message, error);
-};
 
 const checkRequiredConfig = () => {
   const { CLIENT_ENDPOINT_URL, PORT, COOL_DOWN } = process.env;
   if (!CLIENT_ENDPOINT_URL || !PORT || !COOL_DOWN) {
-    logError('MISSING REQUIRED CONFIG SETTING');
+    console.log('MISSING REQUIRED CONFIG SETTING');
     process.exit();
   }
 };
@@ -64,7 +54,7 @@ const getPriceInDUSD = async (amount, symbol) => {
       const [secondRate] = Object.entries(secondPair).map(([, pair]) => pair['reserveA/reserveB']);
       return firstRate.multipliedBy(amount).multipliedBy(secondRate);
     }
-    logError('getPriceInDUSD error', error);
+    console.log('getPriceInDUSD error', error);
     return null;
   }
 };
@@ -79,7 +69,7 @@ const getMaxPrice = async (amount, symbol) => {
     const [rate] = Object.entries(poolPair).map(([, pair]) => pair['reserveA/reserveB']);
     return rate.multipliedBy(amount).multipliedBy('0.99');
   } catch (error) {
-    logError('getMaxPrice error', symbol, error);
+    console.log('getMaxPrice error', symbol, error);
     return null;
   }
 };
@@ -168,7 +158,7 @@ app.get('/get-auction-list/:limit', async (req, res) => {
     });
     res.json(auctions);
   } catch (error) {
-    logError('get-auction-list error', error);
+    console.log('get-auction-list error', error);
     res.status(500);
     res.send('Internal Server Error');
   }
