@@ -97,13 +97,6 @@ const getStartingBid = async (vault, batchIndex, amount, symbol) => {
   return highestBidSoFarNum.multipliedBy('1.01');
 };
 
-const getMyStartingBid = (vault, batchIndex, amount, myPriceInDusd) => {
-  const highestBidSoFar = vault.batches?.[batchIndex]?.highestBid;
-  if (!highestBidSoFar) return myPriceInDusd.multipliedBy(amount).multipliedBy('1.05');
-  const [highestBidAmount] = highestBidSoFar.amount.split('@');
-  return myPriceInDusd.multipliedBy(highestBidAmount).multipliedBy('1.01');
-};
-
 const getRewardPrice = async (collaterals) => {
   const pricePromises = collaterals.map((collateral) => {
     const [amount, symbol] = collateral.split('@');
@@ -113,25 +106,10 @@ const getRewardPrice = async (collaterals) => {
   return prices.reduce((sum, price) => sum.plus(price), new BigNumber(0));
 };
 
-const getAuctionCondition = (margin, diff, minMarginPercentage) => {
-  if (!margin || !diff) return false;
-  return margin.isGreaterThanOrEqualTo(minMarginPercentage) && diff.isGreaterThan(1);
-};
-
-const getOwnPriceData = ({ symbol, vault, batchIndex, minBid, reward }) => {
-  if (!process.env[symbol]) return {};
-  const myPriceInDusd = new BigNumber(process.env[symbol]);
-  const myStartingBid = getMyStartingBid(vault, batchIndex, minBid, myPriceInDusd);
-  const myDiff = reward.minus(myStartingBid);
-  const myMargin = myDiff.dividedBy(myStartingBid).multipliedBy(100);
-  const ownPriceData = { myStartingBid, myDiff, myMargin };
-  return ownPriceData;
-};
-
 app.get('/get-auction-list/:limit', async (req, res) => {
   try {
     const limit = parseInt(req.params.limit, 10);
-    const { minMarginPercentage = 0 } = req.query;
+    const { minMarginPercentage = 0, minProfit = 1 } = req.query;
     const availableAuctions = await getAvailableAuctions(limit);
 
     const result = [];
@@ -149,11 +127,7 @@ app.get('/get-auction-list/:limit', async (req, res) => {
 
       wait(coolDown);
 
-      const ownPriceData = getOwnPriceData({ symbol, vault, batchIndex, minBid, reward });
-      const tokenCondition = getAuctionCondition(margin, diff, minMarginPercentage);
-      const myTokenCondition = getAuctionCondition(ownPriceData.myMargin, ownPriceData.myDiff, minMarginPercentage);
-
-      if (tokenCondition || myTokenCondition) {
+      if (margin.isGreaterThanOrEqualTo(minMarginPercentage) && diff.isGreaterThan(minProfit)) {
         result.push({
           url,
           minBidDusd: startingBid,
@@ -164,7 +138,6 @@ app.get('/get-auction-list/:limit', async (req, res) => {
           bidToken: symbol,
           maxPrice,
           minBid,
-          ...ownPriceData,
         });
       }
     }
@@ -179,9 +152,6 @@ app.get('/get-auction-list/:limit', async (req, res) => {
       maxBlockNumber,
       bidToken,
       minBid,
-      myStartingBid,
-      myDiff,
-      myMargin,
     }) => {
       const auctionData = {
         url,
@@ -194,9 +164,6 @@ app.get('/get-auction-list/:limit', async (req, res) => {
         bidToken: bidToken.toString(),
         minBid: minBid.toString(),
       };
-      if (myStartingBid) auctionData.myStartingBid = myStartingBid;
-      if (myDiff) auctionData.myDiff = myDiff;
-      if (myMargin) auctionData.myMargin = myMargin;
       return auctionData;
     });
     res.json(auctions);
